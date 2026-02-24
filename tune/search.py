@@ -218,6 +218,37 @@ def interpolate_latency(samples, x, comm_op):
 
     return latency.item()
 
+# def predict_lat(M: int, N: int, gemm_dur: float, 
+#     comm_array: torch.Tensor, gp: list, tile_num: int, comm_op: str):
+
+#     device = torch.cuda.current_device()
+#     props = torch.cuda.get_device_properties(device)
+#     sm_count = props.multi_processor_count
+    
+#     acc_comm_dur = 0
+#     acc_comp_dur = 0
+#     iter_num = len(gp)
+
+#     if iter_num == 1:
+#         acc_comm_dur = interpolate_latency(comm_array, M*N // tile_num * gp[0], comm_op) + gemm_dur
+#         return acc_comm_dur
+
+#     old_wave_num = (tile_num + sm_count - 1) // sm_count
+#     new_wave_num = (tile_num + sm_count - 3) // (sm_count - 2)
+#     gemm_dur = gemm_dur / old_wave_num * new_wave_num
+
+#     for i in range(iter_num):
+#         if i == 0:
+#             comm_dur = 0
+#         else:
+#             comm_dur = interpolate_latency(comm_array, M*N // tile_num * gp[i - 1], comm_op)
+#         acc_comm_dur = max(acc_comp_dur, acc_comm_dur) + comm_dur 
+#         acc_comp_dur += gemm_dur / new_wave_num * ((gp[i] + sm_count - 3) // (sm_count - 2))
+#     acc_comm_dur = max(acc_comp_dur, acc_comm_dur) + interpolate_latency(comm_array, M*N // tile_num * gp[-1], comm_op)
+
+#     return acc_comm_dur
+# 기존 predict_lat 함수를 찾아서 아래처럼 수정해 보세요.
+
 def predict_lat(M: int, N: int, gemm_dur: float, 
     comm_array: torch.Tensor, gp: list, tile_num: int, comm_op: str):
 
@@ -235,15 +266,35 @@ def predict_lat(M: int, N: int, gemm_dur: float,
 
     old_wave_num = (tile_num + sm_count - 1) // sm_count
     new_wave_num = (tile_num + sm_count - 3) // (sm_count - 2)
-    gemm_dur = gemm_dur / old_wave_num * new_wave_num
+    
+    # 🌟 [우리의 수정 포인트 1] 이기종 연산 시간 가설 설정
+    # 원래 gemm_dur 하나만 있던 것을, 빠르고 느린 두 GPU 상황으로 쪼갭니다.
+    # (예: A6000이 Ada보다 1.5배 느리다고 가정)
+    gemm_dur_fast = gemm_dur * 0.8  # Ada
+    gemm_dur_slow = gemm_dur * 1.2  # A6000
+
+    gemm_dur_fast_per_wave = gemm_dur_fast / old_wave_num * new_wave_num
+    gemm_dur_slow_per_wave = gemm_dur_slow / old_wave_num * new_wave_num
 
     for i in range(iter_num):
         if i == 0:
             comm_dur = 0
         else:
             comm_dur = interpolate_latency(comm_array, M*N // tile_num * gp[i - 1], comm_op)
+        
         acc_comm_dur = max(acc_comp_dur, acc_comm_dur) + comm_dur 
-        acc_comp_dur += gemm_dur / new_wave_num * ((gp[i] + sm_count - 3) // (sm_count - 2))
+        
+        # 🌟 [우리의 수정 포인트 2] Barrier 동기화 페널티 부여
+        # 타일 조각을 계산할 때, 둘 중 '더 느린 놈'의 시간이 진짜 걸린 시간입니다.
+        tiles_in_segment = (gp[i] + sm_count - 3) // (sm_count - 2)
+        comp_time_fast = (gemm_dur_fast_per_wave / new_wave_num) * tiles_in_segment
+        comp_time_slow = (gemm_dur_slow_per_wave / new_wave_num) * tiles_in_segment
+        
+        # 가장 늦게 끝나는 GPU(A6000)를 기다려야 하므로 max() 적용!
+        actual_comp_dur = max(comp_time_fast, comp_time_slow)
+        
+        acc_comp_dur += actual_comp_dur
+
     acc_comm_dur = max(acc_comp_dur, acc_comm_dur) + interpolate_latency(comm_array, M*N // tile_num * gp[-1], comm_op)
 
     return acc_comm_dur

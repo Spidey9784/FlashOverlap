@@ -1,6 +1,7 @@
 #include "gemm_dispatcher.h"
 
 GemmFuncPtr gemm_func_table[] = {
+    &cutlass_gemm_splitk<128, 256, 32, 64, 64, 32, 16, 8, 8, 2, 1, 1>
     &cutlass_gemm_splitk<128, 128, 32, 64, 64, 32, 16, 8, 16, 3, 1, 1>,
     &cutlass_gemm_splitk<128, 128, 32, 64, 64, 32, 16, 8, 16, 3, 2, 1>,
     &cutlass_gemm_splitk<128, 128, 32, 64, 64, 32, 16, 8, 16, 3, 3, 1>,
