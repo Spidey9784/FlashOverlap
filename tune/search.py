@@ -300,6 +300,7 @@ def predict_lat(M: int, N: int, gemm_dur: float,
 
     return acc_comm_dur
 
+
 def reorder_indices(S, hint):
     # Generate the original array of indices [0, 1, ..., S-1]
     original = list(range(S))
